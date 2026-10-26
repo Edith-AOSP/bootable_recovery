@@ -87,6 +87,9 @@ struct GRFont {
   GRSurface* texture;
   int char_width;
   int char_height;
+  // Per-glyph advance widths for ASCII 0x20..0x7f. Empty for the legacy
+  // fixed-cell fonts, in which case every glyph advances by char_width.
+  std::vector<int> advances;
 };
 
 enum class GRRotation : int {
@@ -147,6 +150,7 @@ void gr_texticon(int x, int y, const GRSurface* icon);
 const GRFont* gr_sys_font();
 const GRFont* gr_menu_font();
 int gr_init_font(const char* name, GRFont** dest);
+void gr_free_font(GRFont* font);
 void gr_text(const GRFont* font, int x, int y, const char* s, bool bold);
 // Returns -1 if font is nullptr.
 int gr_measure(const GRFont* font, const char* s);
@@ -226,6 +230,13 @@ int res_create_multi_display_surface(const char* name, int* frames, int* fps,
 
 // Load a single alpha surface from a grayscale PNG image.
 int res_create_alpha_surface(const char* name, GRSurface** pSurface);
+
+// Load a font atlas (a grayscale PNG in the same 96x2 grid layout as
+// res_create_alpha_surface()) together with its per-glyph advances, which are
+// carried in an "Advances" tEXt chunk. advances is left empty when the chunk
+// is absent, in which case the font is fixed-cell.
+int res_create_font_surface(const char* name, GRSurface** pSurface,
+                            std::vector<int>* advances);
 
 // Load part of a grayscale PNG image that is the first match for the
 // given locale.  The image is expected to be a composite of multiple

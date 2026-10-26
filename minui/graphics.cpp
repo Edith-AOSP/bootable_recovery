@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
 #include <memory>
 
 #include <android-base/properties.h>
@@ -71,7 +72,19 @@ int gr_measure(const GRFont* font, const char* s) {
     return -1;
   }
 
-  return font->char_width * strlen(s);
+  if (font->advances.empty()) {
+    return font->char_width * strlen(s);
+  }
+
+  int width = 0;
+  while (*s) {
+    unsigned char ch = *s++;
+    if (ch < ' ' || ch > '~') {
+      ch = '?';
+    }
+    width += font->advances[ch - ' '];
+  }
+  return width;
 }
 
 int gr_font_size(const GRFont* font, int* x, int* y) {
@@ -220,21 +233,30 @@ void gr_text(const GRFont* font, int x, int y, const char* s, bool bold) {
 
   unsigned char ch;
   while ((ch = *s++)) {
-    if (outside(x, y) || outside(x + font->char_width - 1, y + font->char_height - 1)) break;
-
     if (ch < ' ' || ch > '~') {
       ch = '?';
     }
+
+    const int advance = font->advances.empty() ? font->char_width : font->advances[ch - ' '];
+    if (advance <= 0) {
+      continue;
+    }
+
+    if (outside(x, y) || outside(x + advance - 1, y + font->char_height - 1)) break;
 
     int row_pixels = gr_draw->row_bytes / gr_draw->pixel_bytes;
     const uint8_t* src_p = font->texture->data() + ((ch - ' ') * font->char_width) +
                            (bold ? font->char_height * font->texture->row_bytes : 0);
     uint32_t* dst_p = PixelAt(gr_draw, x, y, row_pixels);
 
-    TextBlend(src_p, font->texture->row_bytes, dst_p, row_pixels, font->char_width,
+    // The glyph cell is at least as wide as the advance, so clip it against
+    // the visible area instead of writing past the last column.
+    const int available_width = gr_fb_width() - (x - overscan_offset_x);
+    const int blend_width = std::min(static_cast<int>(font->char_width), available_width);
+    TextBlend(src_p, font->texture->row_bytes, dst_p, row_pixels, blend_width,
               font->char_height);
 
-    x += font->char_width;
+    x += advance;
   }
 }
 
@@ -368,14 +390,10 @@ unsigned int gr_get_height(const GRSurface* surface) {
 }
 
 int gr_init_font(const char* name, GRFont** dest) {
-  GRFont* font = static_cast<GRFont*>(calloc(1, sizeof(*gr_font)));
-  if (font == nullptr) {
-    return -1;
-  }
-
-  int res = res_create_alpha_surface(name, &(font->texture));
+  GRFont* font = new GRFont();
+  int res = res_create_font_surface(name, &(font->texture), &(font->advances));
   if (res < 0) {
-    free(font);
+    delete font;
     return res;
   }
 
@@ -388,6 +406,12 @@ int gr_init_font(const char* name, GRFont** dest) {
   *dest = font;
 
   return 0;
+}
+
+void gr_free_font(GRFont* font) {
+  if (!font) return;
+  delete font->texture;
+  delete font;
 }
 
 void gr_flip() {
@@ -511,8 +535,15 @@ void gr_exit() {
   delete gr_backend;
   gr_backend = nullptr;
 
-  delete gr_font;
+  // gr_font_menu falls back to gr_font when "font_menu" is missing.
+  GRFont* menu_font = gr_font_menu;
+  GRFont* sys_font = gr_font;
   gr_font = nullptr;
+  gr_font_menu = nullptr;
+  gr_free_font(sys_font);
+  if (menu_font != sys_font) {
+    gr_free_font(menu_font);
+  }
 }
 
 int gr_fb_width() {

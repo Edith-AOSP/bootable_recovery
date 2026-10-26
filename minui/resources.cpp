@@ -357,6 +357,54 @@ int res_create_alpha_surface(const char* name, GRSurface** pSurface) {
   return 0;
 }
 
+int res_create_font_surface(const char* name, GRSurface** pSurface,
+                            std::vector<int>* advances) {
+  *pSurface = nullptr;
+  advances->clear();
+
+  PngHandler png_handler(name);
+  if (!png_handler) return png_handler.error_code();
+
+  if (png_handler.channels() != 1) {
+    return -7;
+  }
+
+  png_structp png_ptr = png_handler.png_ptr();
+  png_uint_32 width = png_handler.width();
+  png_uint_32 height = png_handler.height();
+
+  png_textp text;
+  int num_text;
+  if (png_get_text(png_ptr, png_handler.info_ptr(), &text, &num_text)) {
+    for (int i = 0; i < num_text; ++i) {
+      if (!text[i].key || strcmp(text[i].key, "Advances") != 0 || !text[i].text) continue;
+      for (const auto& piece : android::base::Split(text[i].text, ",")) {
+        advances->push_back(atoi(piece.c_str()));
+      }
+    }
+  }
+
+  // A complete table covers ASCII 0x20..0x7f; anything else is treated as a
+  // fixed-cell font.
+  if (advances->size() != 96) {
+    advances->clear();
+  }
+
+  auto surface = GRSurface::Create(width, height, width, 1);
+  if (!surface) {
+    return -8;
+  }
+
+  for (png_uint_32 y = 0; y < height; ++y) {
+    uint8_t* p_row = surface->data() + y * surface->row_bytes;
+    png_read_row(png_ptr, p_row, nullptr);
+  }
+
+  *pSurface = surface.release();
+
+  return 0;
+}
+
 void res_set_resource_dir(const std::string& dirname) {
   g_resource_dir = dirname;
 }
