@@ -30,6 +30,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -74,13 +75,13 @@ int Menu::selection() const {
 
 TextMenu::TextMenu(bool wrappable, size_t max_length,
                    const std::vector<std::string>& headers, const std::vector<std::string>& items,
-                   size_t initial_selection, int char_height, const DrawInterface& draw_funcs)
+                   size_t initial_selection, int char_height __unused,
+                   const DrawInterface& draw_funcs)
     : Menu(initial_selection, draw_funcs),
       wrappable_(wrappable),
       calibrated_height_(false),
       max_item_length_(max_length),
-      text_headers_(headers),
-      char_height_(char_height) {
+      text_headers_(headers) {
 
   size_t items_count = items.size();
   for (size_t i = 0; i < items_count; ++i) {
@@ -185,33 +186,25 @@ int TextMenu::DrawHeader(int x, int y) const {
 
 int TextMenu::DrawItems(int x, int y, int screen_width, bool long_press) const {
   int offset = 0;
-  int padding = draw_funcs_.MenuItemPadding();
+  const int item_height = draw_funcs_.MenuItemHeight();
 
-  draw_funcs_.SetColor(UIElement::MENU);
-  offset += draw_funcs_.DrawHorizontalRule(y + offset) + 4;
-
-  int item_container_offset = offset; // store it for drawing scrollbar on most top
+  int item_container_offset = 0;  // store it for drawing scrollbar on most top
 
   for (size_t i = MenuStart(); i < MenuEnd(); ++i) {
     if (i == selection()) {
-      // Draw the highlight bar.
+      // Full-bleed highlight bar; the item text is drawn on top of it.
       draw_funcs_.SetColor(long_press ? UIElement::MENU_SEL_BG_ACTIVE : UIElement::MENU_SEL_BG);
-
-      int bar_height = padding + char_height_ + padding;
-      draw_funcs_.DrawHighlightBar(0, y + offset, screen_width, bar_height);
-
-      // Colored text for the selected item.
+      draw_funcs_.DrawHighlightBar(0, y + offset, screen_width, item_height);
       draw_funcs_.SetColor(UIElement::MENU_SEL_FG);
+    } else {
+      draw_funcs_.SetColor(UIElement::MENU);
     }
     offset += draw_funcs_.DrawTextLine(x, y + offset, TextItem(i), false /* bold */);
-
-    draw_funcs_.SetColor(UIElement::MENU);
   }
-  offset += draw_funcs_.DrawHorizontalRule(y + offset);
 
   std::string unused;
   if (ItemsOverflow(&unused)) {
-    int container_height = max_display_items_ * (2 * padding + char_height_);
+    int container_height = max_display_items_ * item_height;
     int bar_height = container_height / (text_items_.size() - max_display_items_ + 1);
     int start_y = y + item_container_offset + bar_height * menu_start_;
     draw_funcs_.SetColor(UIElement::SCROLLBAR);
@@ -336,7 +329,7 @@ MenuDrawFunctions::MenuDrawFunctions(const DrawInterface& wrappee)
 
 int MenuDrawFunctions::DrawTextLine(int x, int y, const std::string& line, bool bold) const {
   gr_text(gr_menu_font(), x, y + MenuItemPadding(), line.c_str(), bold);
-  return 2 * MenuItemPadding() + MenuCharHeight();
+  return MenuItemHeight();
 }
 
 int MenuDrawFunctions::DrawTextLines(int x, int y, const std::vector<std::string>& lines) const {
@@ -347,35 +340,40 @@ int MenuDrawFunctions::DrawTextLines(int x, int y, const std::vector<std::string
   return offset;
 }
 
-int MenuDrawFunctions::DrawWrappedTextLines(int x, int y, const std::vector<std::string>& lines) const {
-  const int padding = MenuItemPadding() / 2;
-
-  // Keep symmetrical margins based on the given offset (i.e. x).
-  size_t text_cols = (gr_fb_width() - x * 2) / MenuCharWidth();
+int MenuDrawFunctions::DrawWrappedTextLines(int x, int y,
+                                           const std::vector<std::string>& lines) const {
+  const int max_width = std::max(1, gr_fb_width() - x * 2);
+  const int line_height = MenuCharHeight() + MenuCharHeight() / 3;
   int offset = 0;
   for (const auto& line : lines) {
-    size_t next_start = 0;
-    while (next_start < line.size()) {
-      std::string sub = line.substr(next_start, text_cols + 1);
-      if (sub.size() <= text_cols) {
-        next_start += sub.size();
-      } else {
-        // Line too long and must be wrapped to text_cols columns.
-        size_t last_space = sub.find_last_of(" \t\n");
-        if (last_space == std::string::npos) {
-          // No space found, just draw as much as we can.
-          sub.resize(text_cols);
-          next_start += text_cols;
-        } else {
-          sub.resize(last_space);
-          next_start += last_space + 1;
+    size_t start = 0;
+    while (start < line.size()) {
+      size_t end = line.size();
+      while (end > start &&
+             gr_measure(gr_menu_font(), line.substr(start, end - start).c_str()) > max_width) {
+        --end;
+      }
+      if (end == start) {
+        end = start + 1;
+      } else if (end < line.size()) {
+        // Prefer to break at the last space of the fitting prefix.
+        size_t space = line.rfind(' ', end);
+        if (space != std::string::npos && space > start) {
+          end = space;
         }
       }
-      offset += DrawTextLine(x, y + offset, sub, false) - (2 * MenuItemPadding() - padding);
+      size_t draw_start = start;
+      while (draw_start < end && line[draw_start] == ' ') {
+        ++draw_start;
+      }
+      gr_text(gr_menu_font(), x, y + offset, line.substr(draw_start, end - draw_start).c_str(),
+              false);
+      offset += line_height;
+      start = end;
+      while (start < line.size() && line[start] == ' ') {
+        ++start;
+      }
     }
-  }
-  if (!lines.empty()) {
-    offset += 2 * MenuItemPadding() - padding;
   }
   return offset;
 }
@@ -383,6 +381,19 @@ int MenuDrawFunctions::DrawWrappedTextLines(int x, int y, const std::vector<std:
 constexpr int kDefaultMarginHeight = 0;
 constexpr int kDefaultMarginWidth = 0;
 constexpr int kDefaultAnimationFps = 30;
+
+// Edith header/menu metrics, in dp. The reference layout is the 1080x2400
+// xxhdpi design at 3 px/dp.
+constexpr int kLogoTopDp = 100;
+constexpr int kLogoToTabsDp = 32;
+constexpr int kTabsGapDp = 65;
+constexpr int kTabsToStatusDp = 32;
+constexpr int kStatusLineGapDp = 6;
+constexpr int kStatusToRuleDp = 10;
+constexpr int kRuleHeightDp = 2;
+constexpr int kRuleToMenuDp = 6;
+constexpr int kMenuIndentDp = 10;
+constexpr int kMenuItemHeightDp = 46;
 
 ScreenRecoveryUI::ScreenRecoveryUI()
     : margin_width_(
@@ -428,6 +439,11 @@ ScreenRecoveryUI::~ScreenRecoveryUI() {
   if (progress_thread_.joinable()) {
     progress_thread_.join();
   }
+  gr_free_font(title_font_);
+  title_font_ = nullptr;
+  gr_free_font(small_font_);
+  small_font_ = nullptr;
+
   // No-op if gr_init() (via Init()) was not called or had failed.
   gr_exit();
 }
@@ -456,6 +472,23 @@ const GRSurface* ScreenRecoveryUI::GetCurrentText() const {
 
 int ScreenRecoveryUI::PixelsFromDp(int dp) const {
   return dp * density_;
+}
+
+int ScreenRecoveryUI::DrawTextLine(const GRFont* font, int x, int y, const std::string& line,
+                                   bool bold) const {
+  if (!font) {
+    return 0;
+  }
+  gr_text(font, x, y, line.c_str(), bold);
+  return font->char_height;
+}
+
+int ScreenRecoveryUI::MenuItemHeight() const {
+  return PixelsFromDp(kMenuItemHeightDp);
+}
+
+int ScreenRecoveryUI::MenuItemPadding() const {
+  return std::max(0, (MenuItemHeight() - MenuCharHeight()) / 2);
 }
 
 // Here's the intended layout:
@@ -500,11 +533,27 @@ int ScreenRecoveryUI::GetProgressBaseline() const {
   return ScreenHeight() - bottom_gap - gr_get_height(progress_bar_fill_.get());
 }
 
+// Material 3 dark scheme (SPEC_2026, Expressive, seed #0b4489, contrast 0.3).
+// Elements map onto scheme roles directly; no ad-hoc tints.
+constexpr int kPrimary = 0xEDF1FF;
+constexpr int kOnPrimary = 0x00193C;
+constexpr int kPrimaryDim = 0xA5C4FF;
+constexpr int kSurface = 0x000000;
+constexpr int kOnSurface = 0xF7F8FF;
+constexpr int kOnSurfaceVariant = 0xEDF1FF;
+constexpr int kOutline = 0xBEC3D2;
+constexpr int kOutlineVariant = 0x989DAB;
+constexpr int kErrorDim = 0xFFAEA9;
+
+static void set_color_rgb(int rgb) {
+  gr_color((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff, 255);
+}
+
 // Clear the screen and draw the currently selected background icon (if any).
 // Should only be called with updateMutex locked.
 void ScreenRecoveryUI::draw_background_locked() {
   pagesIdentical = false;
-  gr_color(0, 0, 0, 255);
+  set_color_rgb(kSurface);
   gr_clear();
   if (current_icon_ != NONE) {
     if (max_stage != -1) {
@@ -522,7 +571,7 @@ void ScreenRecoveryUI::draw_background_locked() {
     const auto& text_surface = GetCurrentText();
     int text_x = (ScreenWidth() - gr_get_width(text_surface)) / 2;
     int text_y = GetTextBaseline();
-    gr_color(255, 255, 255, 255);
+    SetColor(UIElement::INFO);
     DrawTextIcon(text_x, text_y, text_surface);
   }
 }
@@ -549,7 +598,7 @@ void ScreenRecoveryUI::draw_foreground_locked() {
     int progress_y = GetProgressBaseline();
 
     // Erase behind the progress bar (in case this was a progress-only update)
-    gr_color(0, 0, 0, 255);
+    set_color_rgb(kSurface);
     DrawFill(progress_x, progress_y, width, height);
 
     if (progressBarType == DETERMINATE) {
@@ -579,51 +628,42 @@ void ScreenRecoveryUI::draw_foreground_locked() {
   }
 }
 
-/* recovery dark:  #7C4DFF
-   recovery light: #F890FF
-   fastbootd dark: #E65100
-   fastboot light: #FDD835 */
 void ScreenRecoveryUI::SetColor(UIElement e) const {
   switch (e) {
     case UIElement::BATTERY_LOW:
-      if (fastbootd_logo_enabled_)
-        gr_color(0xfd, 0x35, 0x35, 255);
-      else
-        gr_color(0xc7, 0x15, 0x85, 255);
+      set_color_rgb(kErrorDim);
       break;
     case UIElement::INFO:
-      if (fastbootd_logo_enabled_)
-        gr_color(0xfd, 0xd8, 0x35, 255);
-      else
-        gr_color(0xf8, 0x90, 0xff, 255);
+      set_color_rgb(kOnSurface);
       break;
     case UIElement::HEADER:
-      if (fastbootd_logo_enabled_)
-        gr_color(0xfd, 0xd8,0x35, 255);
-      else
-        gr_color(0xf8, 0x90, 0xff, 255);
+      set_color_rgb(kPrimary);
+      break;
+    case UIElement::TAB_INACTIVE:
+      // M3 disabled emphasis: onSurface at 38%.
+      gr_color(0xf7, 0xf8, 0xff, 0x61);
       break;
     case UIElement::MENU:
-      gr_color(0xd8, 0xd8, 0xd8, 255);
+      set_color_rgb(kOnSurface);
       break;
     case UIElement::MENU_SEL_BG:
     case UIElement::SCROLLBAR:
-      if (fastbootd_logo_enabled_)
-        gr_color(0xe6, 0x51, 0x00, 255);
-      else
-        gr_color(0x7c, 0x4d, 0xff, 255);
+      set_color_rgb(kPrimary);
       break;
     case UIElement::MENU_SEL_BG_ACTIVE:
-      gr_color(0, 156, 100, 255);
+      set_color_rgb(kPrimaryDim);
       break;
     case UIElement::MENU_SEL_FG:
-      if (fastbootd_logo_enabled_)
-        gr_color(0, 0, 0, 255);
-      else
-        gr_color(0xd8, 0xd8, 0xd8, 255);
+      set_color_rgb(kOnPrimary);
+      break;
+    case UIElement::SLOT:
+      set_color_rgb(kOutline);
+      break;
+    case UIElement::RULE:
+      set_color_rgb(kOutlineVariant);
       break;
     case UIElement::LOG:
-      gr_color(196, 196, 196, 255);
+      set_color_rgb(kOnSurfaceVariant);
       break;
     case UIElement::TEXT_FILL:
       gr_color(0, 0, 0, 160);
@@ -824,7 +864,7 @@ void ScreenRecoveryUI::draw_screen_locked() {
     return;
   }
 
-  gr_color(0, 0, 0, 255);
+  set_color_rgb(kSurface);
   gr_clear();
 
   draw_menu_and_text_buffer_locked(GetMenuHelpMessage());
@@ -837,35 +877,88 @@ void ScreenRecoveryUI::draw_menu_and_text_buffer_locked(
   int y = margin_height_;
 
   if (menu_) {
-    auto& logo = fastbootd_logo_enabled_ ? fastbootd_logo_ : lineage_logo_;
-    auto logo_width = gr_get_width(logo.get());
-    auto logo_height = gr_get_height(logo.get());
-    auto centered_x = ScreenWidth() / 2 - logo_width / 2;
-    DrawSurface(logo.get(), 0, 0, logo_width, logo_height, centered_x, y);
-    y += logo_height;
+    const int indent = margin_width_ + PixelsFromDp(kMenuIndentDp);
 
+    // The Edith mark.
+    int logo_height = 0;
+    if (edith_logo_) {
+      const int logo_width = gr_get_width(edith_logo_.get());
+      logo_height = gr_get_height(edith_logo_.get());
+      y += PixelsFromDp(kLogoTopDp);
+      DrawSurface(edith_logo_.get(), 0, 0, logo_width, logo_height,
+                  (ScreenWidth() - logo_width) / 2, y);
+      y += logo_height;
+    }
+
+    // Back chevron of a submenu, on the mark's row.
+    back_icon_y_ = y - logo_height / 2 - gr_get_height(back_icon_.get()) / 2;
     if (!menu_->IsMain()) {
-      auto icon_w = gr_get_width(back_icon_.get());
-      auto icon_h = gr_get_height(back_icon_.get());
-      auto icon_x = centered_x / 2 - icon_w / 2;
-      auto icon_y = y - logo_height / 2 - icon_h / 2;
-      gr_blit(back_icon_sel_ && menu_->selection() == -1 ? back_icon_sel_.get() : back_icon_.get(),
-              0, 0, icon_w, icon_h, icon_x, icon_y);
+      if (menu_->selection() == -1) {
+        // Selected: filled primary circle with the arrow in onPrimary.
+        SetColor(UIElement::HEADER);
+        DrawTextIcon(indent, back_icon_y_, back_icon_sel_.get());
+        SetColor(UIElement::MENU_SEL_FG);
+      } else {
+        SetColor(UIElement::TAB_INACTIVE);
+      }
+      DrawTextIcon(indent, back_icon_y_, back_icon_.get());
     }
 
-    int x = margin_width_ + kMenuIndent;
-    if (!title_lines_.empty()) {
-      SetColor(UIElement::INFO);
-      y += DrawTextLines(x, y, title_lines_);
+    // Recovery / Fastboot mode indicator.
+    y += PixelsFromDp(kLogoToTabsDp);
+    if (title_font_) {
+      static const char* kRecoveryLabel = "Recovery";
+      static const char* kFastbootLabel = "Fastboot";
+      const int gap = PixelsFromDp(kTabsGapDp);
+      const int recovery_width = gr_measure(title_font_, kRecoveryLabel);
+      const int fastboot_width = gr_measure(title_font_, kFastbootLabel);
+      const int start = (ScreenWidth() - recovery_width - gap - fastboot_width) / 2;
+      SetColor(fastbootd_logo_enabled_ ? UIElement::TAB_INACTIVE : UIElement::HEADER);
+      gr_text(title_font_, start, y, kRecoveryLabel, false);
+      SetColor(fastbootd_logo_enabled_ ? UIElement::HEADER : UIElement::TAB_INACTIVE);
+      gr_text(title_font_, start + recovery_width + gap, y, kFastbootLabel, false);
+      y += title_font_->char_height;
     }
-    y += menu_->DrawHeader(x, y);
-    menu_start_y_ = y + 12; // Skip horizontal rule and some margin
+
+    // Build version and the active slot (or the fastbootd device details).
+    y += PixelsFromDp(kTabsToStatusDp);
+    status_line_y_ = y;
+    if (small_font_) {
+      const int line_height = small_font_->char_height + PixelsFromDp(kStatusLineGapDp);
+      if (!build_version_.empty()) {
+        SetColor(UIElement::INFO);
+        DrawTextLine(small_font_, indent, y, build_version_, false);
+        y += line_height;
+      }
+      if (!active_slot_.empty()) {
+        SetColor(UIElement::SLOT);
+        DrawTextLine(small_font_, indent, y, active_slot_, false);
+        y += line_height;
+      }
+      if (fastbootd_logo_enabled_) {
+        SetColor(UIElement::TAB_INACTIVE);
+        for (const auto& line : title_lines_) {
+          DrawTextLine(small_font_, indent, y, line, false);
+          y += line_height;
+        }
+      }
+    }
+
+    // Full-bleed rule between the status block and the menu.
+    y += PixelsFromDp(kStatusToRuleDp);
+    SetColor(UIElement::RULE);
+    const int rule_height = std::max(1, PixelsFromDp(kRuleHeightDp));
+    gr_fill(0, y, ScreenWidth(), y + rule_height);
+    y += rule_height + PixelsFromDp(kRuleToMenuDp);
+
+    y += menu_->DrawHeader(indent, y);
+    menu_start_y_ = y;
     menu_->SetMenuHeight(std::max(0, ScreenHeight() - menu_start_y_));
-    y += menu_->DrawItems(x, y, ScreenWidth(), IsLongPress());
+    y += menu_->DrawItems(indent, y, ScreenWidth(), IsLongPress());
     if (!help_message.empty()) {
       y += MenuItemPadding();
       SetColor(UIElement::INFO);
-      y += DrawTextLines(x, y, help_message);
+      y += DrawTextLines(indent, y, help_message);
     }
   }
 
@@ -885,10 +978,10 @@ void ScreenRecoveryUI::draw_menu_and_text_buffer_locked(
 // Draws the battery capacity on the screen. Should only be called with updateMutex locked.
 void ScreenRecoveryUI::draw_battery_capacity_locked() {
   int x;
-  int y = margin_height_ + gr_get_height(lineage_logo_.get());
+  int y = status_line_y_;
   int icon_x, icon_y, icon_h, icon_w;
 
-  if (is_battery_less) return;
+  if (is_battery_less || !menu_ || y <= 0) return;
 
   // Battery status
   std::string batt_capacity = std::to_string(batt_capacity_) + '%';
@@ -898,44 +991,42 @@ void ScreenRecoveryUI::draw_battery_capacity_locked() {
   else if (batt_capacity.back() == '+')
     batt_capacity.pop_back();
 
-  if (menu_) {
-    // Battery icon
-    x = (ScreenWidth() - margin_width_ * 2 - kMenuIndent) - char_width_;
+  // Battery icon
+  x = (ScreenWidth() - margin_width_ * 2) - char_width_;
 
-    SetColor(UIElement::INFO);
+  SetColor(UIElement::INFO);
 
-    // Top
-    icon_x = x + char_width_ / 3;
-    icon_y = y;
-    icon_w = char_width_ / 3;
-    icon_h = char_height_ / 12;
-    gr_fill(icon_x, icon_y, icon_x + icon_w, icon_y + icon_h);
+  // Top
+  icon_x = x + char_width_ / 3;
+  icon_y = y;
+  icon_w = char_width_ / 3;
+  icon_h = char_height_ / 12;
+  gr_fill(icon_x, icon_y, icon_x + icon_w, icon_y + icon_h);
 
-    // Main rect
-    icon_x = x;
-    icon_y = y + icon_h;
-    icon_w = char_width_;
-    icon_h = char_height_ - (char_height_ / 12);
-    gr_fill(icon_x, icon_y, icon_x + icon_w, icon_y + icon_h);
+  // Main rect
+  icon_x = x;
+  icon_y = y + icon_h;
+  icon_w = char_width_;
+  icon_h = char_height_ - (char_height_ / 12);
+  gr_fill(icon_x, icon_y, icon_x + icon_w, icon_y + icon_h);
 
-    // Capacity
-    if (batt_capacity_ <= 15) SetColor(UIElement::BATTERY_LOW);
-    icon_x = x + char_width_ / 6;
-    icon_y = y + char_height_ / 12;
-    icon_w = char_width_ - (2 * char_width_ / 6);
-    icon_h = char_height_ - (3 * char_height_ / 12);
-    int cap_h = icon_h * batt_capacity_ / 100;
-    gr_fill(icon_x, icon_y + icon_h - cap_h, icon_x + icon_w, icon_y + icon_h);
-    gr_color(0, 0, 0, 255);
-    gr_fill(icon_x, icon_y, icon_x + icon_w, icon_y + icon_h - cap_h);
+  // Capacity
+  if (batt_capacity_ <= 15) SetColor(UIElement::BATTERY_LOW);
+  icon_x = x + char_width_ / 6;
+  icon_y = y + char_height_ / 12;
+  icon_w = char_width_ - (2 * char_width_ / 6);
+  icon_h = char_height_ - (3 * char_height_ / 12);
+  int cap_h = icon_h * batt_capacity_ / 100;
+  gr_fill(icon_x, icon_y + icon_h - cap_h, icon_x + icon_w, icon_y + icon_h);
+  gr_color(0, 0, 0, 255);
+  gr_fill(icon_x, icon_y, icon_x + icon_w, icon_y + icon_h - cap_h);
 
-    x -= char_width_;  // Separator
+  x -= char_width_;  // Separator
 
-    // Battery text
-    SetColor(UIElement::INFO);
-    x -= batt_capacity.size() * char_width_;
-    DrawTextLine(x, icon_y, batt_capacity.c_str(), false);
-  }
+  // Battery text
+  SetColor(UIElement::INFO);
+  x -= batt_capacity.size() * char_width_;
+  DrawTextLine(x, icon_y, batt_capacity.c_str(), false);
 }
 
 // Redraw everything on the screen and flip the screen (make it visible).
@@ -1075,6 +1166,15 @@ std::unique_ptr<GRSurface> ScreenRecoveryUI::LoadBitmap(const std::string& filen
   return std::unique_ptr<GRSurface>(surface);
 }
 
+std::unique_ptr<GRSurface> ScreenRecoveryUI::LoadAlphaBitmap(const std::string& filename) {
+  GRSurface* surface;
+  if (auto result = res_create_alpha_surface(filename.c_str(), &surface); result < 0) {
+    LOG(ERROR) << "Failed to load alpha bitmap " << filename << " (error " << result << ")";
+    return nullptr;
+  }
+  return std::unique_ptr<GRSurface>(surface);
+}
+
 std::unique_ptr<GRSurface> ScreenRecoveryUI::LoadLocalizedBitmap(const std::string& filename) {
   GRSurface* surface;
   auto result = res_create_localized_alpha_surface(filename.c_str(), locale_.c_str(), &surface);
@@ -1116,6 +1216,15 @@ bool ScreenRecoveryUI::InitTextParams() {
   }
   gr_font_size(gr_sys_font(), &char_width_, &char_height_);
   gr_font_size(gr_menu_font(), &menu_char_width_, &menu_char_height_);
+  // The menu font is proportional, so columns are sized from the mean advance
+  // instead of the widest cell.
+  if (gr_menu_font() != nullptr && !gr_menu_font()->advances.empty()) {
+    int total = 0;
+    for (int advance : gr_menu_font()->advances) {
+      total += advance;
+    }
+    menu_char_width_ = std::max(1, total / static_cast<int>(gr_menu_font()->advances.size()));
+  }
   text_rows_ = (ScreenHeight() - margin_height_ * 2) / char_height_;
   text_cols_ = (ScreenWidth() - margin_width_ * 2) / char_width_;
   return true;
@@ -1193,14 +1302,23 @@ bool ScreenRecoveryUI::Init(const std::string& locale) {
   no_command_text_ = LoadLocalizedBitmap("no_command_text");
   error_text_ = LoadLocalizedBitmap("error_text");
 
-  back_icon_ = LoadBitmap("ic_back");
-  back_icon_sel_ = LoadBitmap("ic_back_sel");
-  if (android::base::GetBoolProperty("ro.boot.dynamic_partitions", false) ||
-      android::base::GetBoolProperty("ro.fastbootd.available", false)) {
-    lineage_logo_ = LoadBitmap("logo_image_switch");
-    fastbootd_logo_ = LoadBitmap("fastbootd");
-  } else {
-    lineage_logo_ = LoadBitmap("logo_image");
+  back_icon_ = LoadAlphaBitmap("ic_back");
+  back_icon_sel_ = LoadAlphaBitmap("ic_back_sel");
+  edith_logo_ = LoadBitmap("edith_logo");
+
+  gr_init_font("font_title", &title_font_);
+  gr_init_font("font_small", &small_font_);
+
+  // ro.edith.build.version carries the full build string; fall back to the
+  // release version when the product does not set it.
+  build_version_ = android::base::GetProperty("ro.edith.build.version", "");
+  if (build_version_.empty()) {
+    build_version_ = android::base::GetProperty("ro.edith.version", "");
+  }
+  const std::string slot_suffix = android::base::GetProperty("ro.boot.slot_suffix", "");
+  if (!slot_suffix.empty()) {
+    active_slot_ = std::string("Active Slot : ") +
+                   static_cast<char>(std::toupper(slot_suffix.back()));
   }
 
   // Background text for "installing_update" could be "installing update" or
@@ -1535,13 +1653,10 @@ int ScreenRecoveryUI::SelectMenu(const Point& p) {
   if (menu_) {
     if (!menu_->IsMain()) {
       // Back arrow hitbox
-      const static int logo_width = gr_get_width(lineage_logo_.get());
-      const static int logo_height = gr_get_height(lineage_logo_.get());
-      const static int icon_w = gr_get_width(back_icon_.get());
-      const static int icon_h = gr_get_height(back_icon_.get());
-      const static int centered_x = ScreenWidth() / 2 - logo_width / 2;
-      const static int icon_x = centered_x / 2 - icon_w / 2;
-      const static int icon_y = margin_height_ + logo_height / 2 - icon_h / 2;
+      const int icon_w = gr_get_width(back_icon_.get());
+      const int icon_h = gr_get_height(back_icon_.get());
+      const int icon_x = margin_width_ + PixelsFromDp(kMenuIndentDp);
+      const int icon_y = back_icon_y_;
 
       if (point.x() >= icon_x && point.x() <= icon_x + icon_w &&
           point.y() >= icon_y && point.y() <= icon_y + icon_h) {

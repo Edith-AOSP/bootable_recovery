@@ -30,6 +30,7 @@
 
 // From minui/minui.h.
 class GRSurface;
+struct GRFont;
 
 enum class UIElement {
   BATTERY_LOW,
@@ -41,7 +42,10 @@ enum class UIElement {
   SCROLLBAR,
   LOG,
   TEXT_FILL,
-  INFO
+  INFO,
+  TAB_INACTIVE,
+  SLOT,
+  RULE
 };
 
 // Interface to draw the UI elements on the screen.
@@ -125,7 +129,7 @@ class TextMenu : public Menu {
   // selection to |initial_selection|.
   TextMenu(bool wrappable, size_t max_length,
            const std::vector<std::string>& headers, const std::vector<std::string>& items,
-           size_t initial_selection, int char_height, const DrawInterface& draw_funcs);
+           size_t initial_selection, int char_height __unused, const DrawInterface& draw_funcs);
 
   int Select(int sel) override;
   int SelectVisible(int relative_sel) override;
@@ -192,9 +196,6 @@ class TextMenu : public Menu {
   std::vector<std::string> text_items_;
   // The first item to display on the screen.
   size_t menu_start_;
-
-  // Height in pixels of each character.
-  int char_height_;
 };
 
 // This class uses GRSurface's as the menu header and items.
@@ -339,9 +340,8 @@ class ScreenRecoveryUI : public RecoveryUI, public DrawInterface {
   // For Lid switch handle
   int SetSwCallback(int code, int value) override;
 
-  int MenuItemHeight() const override {
-    return MenuCharHeight() + 2 * MenuItemPadding();
-  }
+  int MenuItemHeight() const override;
+  int MenuItemPadding() const override;
 
  protected:
   static constexpr int kMenuIndent = 24;
@@ -414,9 +414,11 @@ class ScreenRecoveryUI : public RecoveryUI, public DrawInterface {
 
   virtual void LoadAnimation();
   std::unique_ptr<GRSurface> LoadBitmap(const std::string& filename);
+  std::unique_ptr<GRSurface> LoadAlphaBitmap(const std::string& filename);
   std::unique_ptr<GRSurface> LoadLocalizedBitmap(const std::string& filename);
 
   int PixelsFromDp(int dp) const;
+  int DrawTextLine(const GRFont* font, int x, int y, const std::string& line, bool bold) const;
   virtual int GetAnimationBaseline() const;
   virtual int GetProgressBaseline() const;
   virtual int GetTextBaseline() const;
@@ -444,9 +446,6 @@ class ScreenRecoveryUI : public RecoveryUI, public DrawInterface {
   int MenuCharWidth() const override {
     return menu_char_width_;
   }
-  int MenuItemPadding() const override {
-    return menu_char_height_;
-  }
 
   std::unique_ptr<MenuDrawFunctions> menu_draw_funcs_;
 
@@ -466,10 +465,23 @@ class ScreenRecoveryUI : public RecoveryUI, public DrawInterface {
   std::unique_ptr<GRSurface> wipe_data_confirmation_text_;
   std::unique_ptr<GRSurface> wipe_data_menu_header_text_;
 
-  std::unique_ptr<GRSurface> lineage_logo_;
+  // Edith header: the mark, the two mode labels and the status block are drawn
+  // on every menu screen.
+  std::unique_ptr<GRSurface> edith_logo_;
   std::unique_ptr<GRSurface> back_icon_;
   std::unique_ptr<GRSurface> back_icon_sel_;
-  std::unique_ptr<GRSurface> fastbootd_logo_;
+
+  // Google Sans Flex fonts for the header and menu text. Both fall back to the
+  // default menu font when the resources are missing.
+  GRFont* title_font_ = nullptr;
+  GRFont* small_font_ = nullptr;
+
+  std::string build_version_;
+  std::string active_slot_;
+
+  // Top of the status block and of the back arrow, used by the touch hitboxes.
+  int status_line_y_ = 0;
+  int back_icon_y_ = 0;
 
   // current_icon_ points to one of the frames in intro_frames_ or loop_frames_, indexed by
   // current_frame_, or error_icon_.
