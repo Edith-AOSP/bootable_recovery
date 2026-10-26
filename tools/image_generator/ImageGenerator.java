@@ -102,6 +102,9 @@ public class ImageGenerator {
     // The width of the word "Android" when drawing with the default font.
     private int mAndroidStringWidth;
 
+    // Font used for Latin-script languages, or null to keep DEFAULT_FONT_NAME.
+    private final String mLatinFontName;
+
     // The default Font to draw latin characters. It's loaded from DEFAULT_FONT_NAME.
     private Font mDefaultFont;
     // Cache of the loaded fonts for all languages.
@@ -112,6 +115,9 @@ public class ImageGenerator {
     // And the language-subtag-registry is found in:
     // https://www.iana.org/assignments/language-subtag-registry/language-subtag-registry
     private static final String DEFAULT_FONT_NAME = "Roboto-Regular";
+    // Languages that default to DEFAULT_FONT_NAME but need its non-Latin coverage.
+    private static final Set<String> NON_LATIN_LANGUAGES =
+            Set.of("be", "bg", "el", "kk", "ky", "mk", "mn", "ru", "sr", "tg", "uk");
     private static final Map<String, String> LANGUAGE_TO_FONT_MAP =
             Map.ofEntries(
                 entry("am", "NotoSansEthiopic-VF"),
@@ -240,7 +246,8 @@ public class ImageGenerator {
             String textName,
             float fontSize,
             String fontDirPath,
-            boolean centerAlignment) {
+            boolean centerAlignment,
+            String latinFontName) {
         mImageWidth = initialImageWidth;
         mImageHeight = INITIAL_HEIGHT;
         mVerticalOffset = 0;
@@ -251,6 +258,7 @@ public class ImageGenerator {
         mTextName = textName;
         mFontSize = fontSize;
         mFontDirPath = fontDirPath;
+        mLatinFontName = latinFontName;
         mLoadedFontMap = new TreeMap<>();
 
         mCenterAlignment = centerAlignment;
@@ -381,7 +389,11 @@ public class ImageGenerator {
             return mLoadedFontMap.get(language);
         }
 
-        String fontName = LANGUAGE_TO_FONT_MAP.getOrDefault(language, DEFAULT_FONT_NAME);
+        String fontName = LANGUAGE_TO_FONT_MAP.get(language);
+        if (fontName == null) {
+            fontName = (mLatinFontName != null && !NON_LATIN_LANGUAGES.contains(language))
+                    ? mLatinFontName : DEFAULT_FONT_NAME;
+        }
         String[] suffixes = {".otf", ".ttf", ".ttc"};
         for (String suffix : suffixes) {
             File fontFile = new File(mFontDirPath, fontName + suffix);
@@ -687,6 +699,14 @@ public class ImageGenerator {
                         .create());
 
         options.addOption(
+                OptionBuilder.withLongOpt("latin_font")
+                        .withDescription("Font file name (without extension) used for Latin-script"
+                                + " languages, e.g. GoogleSansFlex-Regular. Non-Latin languages"
+                                + " keep their mapped font.")
+                        .hasArgs(1)
+                        .create());
+
+        options.addOption(
                 OptionBuilder.withLongOpt("center_alignment")
                         .withDescription("Align the text in the center of the screen.")
                         .hasArg(false)
@@ -736,7 +756,8 @@ public class ImageGenerator {
                         cmd.getOptionValue("text_name"),
                         DEFAULT_FONT_SIZE,
                         cmd.getOptionValue("font_dir"),
-                        cmd.hasOption("center_alignment"));
+                        cmd.hasOption("center_alignment"),
+                        cmd.getOptionValue("latin_font"));
 
         Set<String> localesSet = null;
         if (cmd.hasOption("locales")) {
